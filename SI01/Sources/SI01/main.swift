@@ -4,6 +4,15 @@ import SI01Core
 @main
 enum SI01Main {
     static func main() throws {
+        if CommandLine.arguments.contains("--self-test") {
+            var failed = 0
+            for check in kernelChecks() {
+                print("\(check.pass ? "pass" : "fail")  \(check.name)  \(check.detail)")
+                if !check.pass { failed += 1 }
+            }
+            if failed > 0 { exit(1) }
+            return
+        }
         let app = App()
         if CommandLine.arguments.contains("--check") {
             try app.setChannels(1)
@@ -25,8 +34,9 @@ enum SI01Main {
                 exit(1)
             }
             print(frame)
+            app.stop()
             return
         }
-        fputs("SI-01 runs on macOS. Pass --check to exercise the session.\n", stderr)
+        fputs("SI-01 runs on macOS. --check exercises the session. --self-test runs the kernel.\n", stderr)
     }
 }

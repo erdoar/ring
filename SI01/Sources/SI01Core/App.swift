@@ -2,6 +2,10 @@ public final class App {
     public private(set) var session: Session
     public var quits: QuitList
     private var meter = Meter()
+    private var engines: [Engine] = []
+    private let worker = FitWorker()
+    private var scratchIn = [Double](repeating: 0, count: MAX_BLOCK)
+    private var scratchOut = [Double](repeating: 0, count: MAX_BLOCK)
 
     public init(session: Session = Session(), quits: QuitList = QuitList()) {
         self.session = session
@@ -18,9 +22,18 @@ public final class App {
 
     public func start() {
         session.start()
+        engines = (0 ..< session.channels).map { _ in
+            let engine = Engine(mode: session.mode)
+            engine.fitMode = .worker
+            return engine
+        }
+        worker.bind(engines)
+        worker.start()
     }
 
     public func stop() {
+        worker.stop()
+        engines = []
         session.stop()
     }
 
@@ -37,15 +50,22 @@ public final class App {
     ) throws {
         if !session.running { throw SessionError.whileStopped }
         if channel < 0 || channel >= session.channels { throw SessionError.channelCount }
-        if frames <= 0 { throw SessionError.block }
-        output.update(from: input, count: frames)
+        if frames < 1 || frames > MAX_BLOCK { throw SessionError.block }
+        let engine = engines[channel]
+        scratchIn.withUnsafeMutableBufferPointer { source in
+            scratchOut.withUnsafeMutableBufferPointer { dest in
+                for i in 0 ..< frames { source[i] = Double(input[i]) }
+                engine.render(input: source.baseAddress!, output: dest.baseAddress!, frames: frames)
+                for i in 0 ..< frames { output[i] = Float(dest[i]) }
+            }
+        }
         meter.note(
             channel: channel,
             channels: session.channels,
             delay: session.delaySamples,
             mode: session.mode,
-            likelihood: 0,
-            cutDb: 0
+            likelihood: Float(engine.likelihood),
+            cutDb: Float(engine.subtractionDb())
         )
     }
 
