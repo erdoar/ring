@@ -38,5 +38,8 @@ enum SI01Main {
             return
         }
         fputs("SI-01 runs on macOS. --check exercises the session. --self-test runs the kernel.\n", stderr)
+        #if os(macOS)
+        try CoreAudioHost.runDefault(channels: 1)
+        #endif
     }
 }

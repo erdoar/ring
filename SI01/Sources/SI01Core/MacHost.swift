@@ -20,6 +20,7 @@ public struct DeviceRequest: Equatable {
 #if os(macOS)
 import AudioToolbox
 import CoreAudio
+import Darwin
 
 /// Opens one USB input device. The IO proc calls `App.processBlock` and nothing else.
 public final class CoreAudioHost {
@@ -50,23 +51,44 @@ public final class CoreAudioHost {
         AudioObjectGetPropertyData(device, &address, 0, nil, &gotSize, &got)
         if got != frames { throw SessionError.block }
         let opaque = Unmanaged.passUnretained(self).toOpaque()
-        let created = AudioDeviceCreateIOProcID(device, { _, _, input, _, output, _, _, context in
+        let created = AudioDeviceCreateIOProcID(device, { _, _, input, _, output, _, context in
             guard let context, let output, let input else { return noErr }
             let host = Unmanaged<CoreAudioHost>.fromOpaque(context).takeUnretainedValue()
-            let frames = Int(input.pointee.mNumberBuffers > 0 ? input.pointee.mBuffers.mDataByteSize / 4 : 0)
-            host.render(input: input, output: output, frames: frames)
+            host.render(input: input, output: output)
             return noErr
         }, opaque, &proc)
         if created != noErr { throw SessionError.block }
     }
 
-    private func render(input: UnsafePointer<AudioBufferList>, output: UnsafeMutablePointer<AudioBufferList>, frames: Int) {
+    private var planeIn = [Float](repeating: 0, count: MAX_BLOCK)
+    private var planeOut = [Float](repeating: 0, count: MAX_BLOCK)
+
+    private func render(input: UnsafePointer<AudioBufferList>, output: UnsafeMutablePointer<AudioBufferList>) {
         let inList = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
         let outList = UnsafeMutableAudioBufferListPointer(output)
+        guard inList.count > 0, outList.count > 0 else { return }
+        if inList.count == 1 && inList[0].mNumberChannels > 1 {
+            let stride = Int(inList[0].mNumberChannels)
+            let frames = min(MAX_BLOCK, Int(inList[0].mDataByteSize) / (4 * max(1, stride)))
+            guard let src = inList[0].mData?.assumingMemoryBound(to: Float.self),
+                  let dst = outList[0].mData?.assumingMemoryBound(to: Float.self) else { return }
+            let channels = min(app.session.channels, stride)
+            for channel in 0 ..< channels {
+                for i in 0 ..< frames { planeIn[i] = src[i * stride + channel] }
+                planeIn.withUnsafeBufferPointer { source in
+                    planeOut.withUnsafeMutableBufferPointer { dest in
+                        try? app.processBlock(input: source.baseAddress!, output: dest.baseAddress!, frames: frames, channel: channel)
+                    }
+                }
+                for i in 0 ..< frames { dst[i * stride + channel] = planeOut[i] }
+            }
+            return
+        }
         let channels = min(app.session.channels, inList.count, outList.count)
         for channel in 0 ..< channels {
             guard let src = inList[channel].mData?.assumingMemoryBound(to: Float.self),
                   let dst = outList[channel].mData?.assumingMemoryBound(to: Float.self) else { continue }
+            let frames = min(MAX_BLOCK, Int(inList[channel].mDataByteSize) / 4)
             try? app.processBlock(input: src, output: dst, frames: frames, channel: channel)
         }
     }
@@ -83,6 +105,34 @@ public final class CoreAudioHost {
     public func stop() {
         if let proc { AudioDeviceStop(device, proc) }
         app.stop()
+    }
+
+    /// Default input, 48 kHz, 32 frames. Returns when the process is signalled.
+    public static func runDefault(channels: Int) throws {
+        var device = AudioDeviceID(0)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let read = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device
+        )
+        if read != noErr || device == 0 { throw SessionError.block }
+        let app = App()
+        try app.setChannels(channels)
+        let host = CoreAudioHost(app: app, request: DeviceRequest(channels: channels))
+        try host.open(device: device)
+        try host.start()
+        signal(SIGINT, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        source.setEventHandler {
+            host.stop()
+            exit(0)
+        }
+        source.resume()
+        dispatchMain()
     }
 }
 #endif
