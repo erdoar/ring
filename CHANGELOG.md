@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.3 — 2026-10-15 — build
+
+`pow` and `log10` are imported, so the trim and the input meter compile.
+
 ## 0.6.2 — 2026-10-15 — window
 
 The app is named Ring. It opens a window again, the same shape as the earlier one: channel count, ZERO or LOW, a mix knob, a level, a trim knob on the right (±8 dB), mute, voice, and cut. Mix at the bottom is bypass, and that drops the trim too. The monitor address is shown once and can be selected. The window can shrink to 300 points. New files for this build carry the name and the version.

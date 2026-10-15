@@ -1,3 +1,6 @@
+import Darwin
+import Foundation
+
 public final class App {
     public private(set) var session: Session
     public var quits: QuitList
