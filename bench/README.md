@@ -11,7 +11,7 @@ B=.build/release/ring-bench
 $B selftest
 $B generate runs/stimuli
 $B render si01 runs/stimuli runs/si01
-$B render au De-Feedback runs/stimuli runs/defeedback
+$B render au De-Feedback --preroll 6 runs/stimuli runs/defeedback
 $B analyse runs/stimuli runs/si01 runs/defeedback --out runs/report.md
 ```
 
