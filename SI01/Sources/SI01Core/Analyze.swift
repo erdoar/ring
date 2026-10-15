@@ -6,85 +6,35 @@ struct Peak {
     var harmonic: Double
 }
 
-/// Scratch for the gate and the bleed scan. Buffers exist for the life of the engine.
+/// Scratch for the gate and the howl scan. Runs on the analysis worker, never the callback.
+/// Buffers and the FFT setup exist for the life of the engine.
 final class Analyzer {
     let count: Int
+    private let win: [Double]
     var hann: [Double]
-    var re: [Double]
-    var im: [Double]
     var mag: [Double]
     var peaks: [Peak]
     private var gathered: [Peak]
+    private let fft: RealFFT
 
     init(count: Int = 1024) {
         self.count = count
+        let denom = Double(count - 1)
+        win = (0 ..< count).map { 0.5 - 0.5 * cos((2 * Double.pi * Double($0)) / denom) }
         hann = [Double](repeating: 0, count: count)
-        re = [Double](repeating: 0, count: count)
-        im = [Double](repeating: 0, count: count)
         mag = [Double](repeating: 0, count: count / 2)
         peaks = [Peak](repeating: Peak(hz: 0, mag: 0, harmonic: 0), count: 8)
         gathered = [Peak](repeating: Peak(hz: 0, mag: 0, harmonic: 0), count: 256)
+        fft = RealFFT(count: count)
     }
 
     func window(_ frame: [Double]) {
-        let n = count
-        let denom = Double(n - 1)
-        for i in 0 ..< n {
-            hann[i] = frame[i] * (0.5 - 0.5 * cos((2 * Double.pi * Double(i)) / denom))
-        }
+        for i in 0 ..< count { hann[i] = frame[i] * win[i] }
     }
 
     func fftMag() {
-        let n = count
-        for i in 0 ..< n {
-            re[i] = hann[i]
-            im[i] = 0
-        }
-        var j = 0
-        var i = 1
-        while i < n {
-            var bit = n >> 1
-            while j & bit != 0 {
-                j ^= bit
-                bit >>= 1
-            }
-            j ^= bit
-            if i < j {
-                let tr = re[i]
-                re[i] = re[j]
-                re[j] = tr
-            }
-            i += 1
-        }
-        var len = 2
-        while len <= n {
-            let ang = (-2 * Double.pi) / Double(len)
-            let wlenRe = cos(ang)
-            let wlenIm = sin(ang)
-            var base = 0
-            while base < n {
-                var wRe = 1.0
-                var wIm = 0.0
-                let half = len / 2
-                for k in 0 ..< half {
-                    let uRe = re[base + k]
-                    let uIm = im[base + k]
-                    let vRe = re[base + k + half] * wRe - im[base + k + half] * wIm
-                    let vIm = re[base + k + half] * wIm + im[base + k + half] * wRe
-                    re[base + k] = uRe + vRe
-                    im[base + k] = uIm + vIm
-                    re[base + k + half] = uRe - vRe
-                    im[base + k + half] = uIm - vIm
-                    let nextRe = wRe * wlenRe - wIm * wlenIm
-                    wIm = wRe * wlenIm + wIm * wlenRe
-                    wRe = nextRe
-                }
-                base += len
-            }
-            len <<= 1
-        }
-        for k in 0 ..< mag.count {
-            mag[k] = hypot(re[k], im[k])
+        hann.withUnsafeBufferPointer { src in
+            mag.withUnsafeMutableBufferPointer { fft.magnitudes(src.baseAddress!, into: $0.baseAddress!) }
         }
     }
 
@@ -128,8 +78,7 @@ final class Analyzer {
 
     func likelihood(_ frame: [Double], sr: Double) -> Double {
         if frame.count < count { return 0 }
-        var energy = 0.0
-        for sample in frame { energy += sample * sample }
+        let energy = frame.withUnsafeBufferPointer { dot($0.baseAddress!, 1, $0.baseAddress!, 1, $0.count) }
         if energy / Double(frame.count) < 1e-8 { return 0 }
         window(frame)
         fftMag()
@@ -144,44 +93,37 @@ final class Analyzer {
         let lag0 = Int((sr / coarseHz).rounded())
         let minLag = max(2, lag0 - 5)
         let maxLag = min(frame.count - 2, lag0 + 5)
-        var bestLag = lag0
-        var best = -1.0
         let n = frame.count
-        if minLag <= maxLag {
-            for lag in minLag ... maxLag {
-                var num = 0.0
-                var a = 0.0
-                var b = 0.0
-                let limit = n - lag
-                for i in 0 ..< limit {
-                    let x = frame[i]
-                    let y = frame[i + lag]
-                    num += x * y
-                    a += x * x
-                    b += y * y
-                }
-                let c = num / sqrt(a * b + 1e-18)
-                if c > best {
-                    best = c
-                    bestLag = lag
+        return frame.withUnsafeBufferPointer { buf -> Double in
+            let f = buf.baseAddress!
+            var bestLag = lag0
+            var best = -1.0
+            if minLag <= maxLag {
+                for lag in minLag ... maxLag {
+                    let limit = n - lag
+                    let num = dot(f, 1, f + lag, 1, limit)
+                    let a = dot(f, 1, f, 1, limit)
+                    let b = dot(f + lag, 1, f + lag, 1, limit)
+                    let c = num / sqrt(a * b + 1e-18)
+                    if c > best {
+                        best = c
+                        bestLag = lag
+                    }
                 }
             }
+            if best < 0.85 { return coarseHz }
+            func corr(_ lag: Int) -> Double {
+                let limit = n - lag
+                return limit <= 0 ? 0 : dot(f, 1, f + lag, 1, limit)
+            }
+            let c0 = corr(bestLag - 1)
+            let c1 = corr(bestLag)
+            let c2 = corr(bestLag + 1)
+            let denom = c0 - 2 * c1 + c2
+            let delta = abs(denom) < 1e-12 ? 0 : (0.5 * (c0 - c2)) / denom
+            let lag = Double(bestLag) + min(0.5, max(-0.5, delta))
+            return sr / lag
         }
-        if best < 0.85 { return coarseHz }
-        func corr(_ lag: Int) -> Double {
-            var num = 0.0
-            let limit = n - lag
-            if limit <= 0 { return 0 }
-            for i in 0 ..< limit { num += frame[i] * frame[i + lag] }
-            return num
-        }
-        let c0 = corr(bestLag - 1)
-        let c1 = corr(bestLag)
-        let c2 = corr(bestLag + 1)
-        let denom = c0 - 2 * c1 + c2
-        let delta = abs(denom) < 1e-12 ? 0 : (0.5 * (c0 - c2)) / denom
-        let lag = Double(bestLag) + min(0.5, max(-0.5, delta))
-        return sr / lag
     }
 
     private func sharp(_ bin: Int) -> Double {
