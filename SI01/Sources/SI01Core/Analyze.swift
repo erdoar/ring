@@ -88,6 +88,8 @@ final class Analyzer {
         }
     }
 
+    var found = 0
+
     /// Loudest eight peaks, stored in `peaks`. Returns how many.
     func findPeaks(frameLength: Int, sr: Double) -> Int {
         let binHz = sr / Double(frameLength)
@@ -123,6 +125,7 @@ final class Analyzer {
         gathered[0 ..< n].sort { $0.mag > $1.mag }
         let keep = min(8, n)
         for i in 0 ..< keep { peaks[i] = gathered[i] }
+        found = keep
         return keep
     }
 

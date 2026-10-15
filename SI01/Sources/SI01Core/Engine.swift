@@ -376,11 +376,8 @@ public final class Engine {
     }
 
     private func updateHowl() {
-        if fadeLeft > 0 || seen < GATE_WINDOW { return }
-        fillFrame()
-        analyzer.window(frame)
-        analyzer.fftMag()
-        let found = analyzer.findPeaks(frameLength: GATE_WINDOW, sr: sr)
+        if fadeLeft > 0 || seen < GATE_WINDOW || !gateReady { return }
+        let found = analyzer.found
         for i in 0 ..< 8 { usedPeak[i] = false }
         var confirmed = 0
         for index in 0 ..< HOWLS {
@@ -408,8 +405,7 @@ public final class Engine {
             }
             usedPeak[best] = true
             let peak = analyzer.peaks[best]
-            let refined = analyzer.refineHz(frame, coarseHz: peak.hz, sr: sr)
-            tracks[index].hz = refined == 0 ? peak.hz : refined
+            tracks[index].hz = peak.hz
             tracks[index].age = 0
             tracks[index].mags.push(peak.mag)
             tracks[index].freqs.push(tracks[index].hz)
@@ -483,16 +479,6 @@ public final class Engine {
         fadeLeft = n
         fadeLen = max(1, n)
         crossfades += 1
-        confirmedHowls = 0
-        for i in 0 ..< HOWLS {
-            tracks[i].hz = 0
-            tracks[i].gain = 1
-            tracks[i].pinned = false
-            tracks[i].mags.removeAll()
-            tracks[i].freqs.removeAll()
-            tracks[i].age = 0
-            tracks[i].clearFilterState()
-        }
     }
 }
 

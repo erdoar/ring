@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.6 — 2026-10-15 — notch center
+
+The howl notch follows the interpolated FFT peak. The old lag search snapped a 2.5 kHz tone by tens of hertz, which is enough to miss the notch. That search no longer runs on the audio thread, and a block-size change no longer clears a howl that was already found.
+
 ## 0.6.5 — 2026-10-15 — entry
 
 The entry file is no longer named `main.swift`. Swift treats that name as a script, which cannot also carry `@main`.
