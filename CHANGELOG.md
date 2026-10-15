@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — benchmark
+
+### Added
+
+- `bench/` holds `ring-bench`, a black-box benchmark. It generates howl and voice test signals, renders them through SI-01's engine offline, through any Audio Unit plug-in offline, or through live hardware, and reports latency, time to cut, howl depth and collateral loss. `ring-bench selftest` checks the measures against a known delay and a known notch.
+
+### First results (main at c8472c8, offline, 256-frame blocks)
+
+- SI-01 cuts the 2.5 kHz howl by only 3.7 dB and the 315 Hz howl by 13.7 dB (6 dB reached after 2.7 s). It misses a howl on a sung note's harmonic entirely.
+- SI-01 leaves voice content intact: 95th-percentile loss is 1.5 dB or less on every voice file.
+
 ## Unreleased — safety refactor tranche
 
 ### Changed
