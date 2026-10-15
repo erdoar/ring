@@ -124,7 +124,9 @@ public func kernelChecks() -> [KernelCheck] {
     capped.dereverb = 1
     capped.strength = 0.5
     capped.workerEnabled = false
-    capped.tail[0] = 40
+    var aggressiveTail = [Double](repeating: 0, count: TAIL_TAPS)
+    aggressiveTail[0] = 40
+    capped.setTailForTesting(aggressiveTail)
     let y = [Double](repeating: 0.5, count: 640)
     let cappedOut = render(capped, y, 32)
     let floor = pow(10, -(12 * 0.5) / 20)
@@ -156,18 +158,40 @@ public func kernelChecks() -> [KernelCheck] {
     checks.append(KernelCheck(name: "Delay report", pass: delayOK, detail: "ZERO 0, LOW 127"))
 
     let horizon = Engine()
-    _ = render(horizon, growingTone(1), 64)
-    checks.append(KernelCheck(name: "Horizon", pass: horizon.horizonHeld, detail: "oldest input \(horizon.minInputAgo) back"))
+    _ = render(horizon, growingTone(1), 256)
+    checks.append(KernelCheck(name: "Horizon", pass: horizon.lastTailHorizon == 256, detail: "FIR horizon \(horizon.lastTailHorizon) for 256-sample host block"))
 
     let worker = Engine()
     worker.fitMode = .worker
-    _ = render(worker, growingTone(0.5), 32)
-    let asked = worker.needsFit
-    worker.performFit()
+    let workerSignal = growingTone(0.5)
+    var posted = false
+    var workerOut = [Double](repeating: 0, count: workerSignal.count)
+    var wi = 0
+    while wi < workerSignal.count {
+        let n = min(32, workerSignal.count - wi)
+        workerSignal.withUnsafeBufferPointer { src in
+            workerOut.withUnsafeMutableBufferPointer { dst in
+                worker.render(input: src.baseAddress! + wi, output: dst.baseAddress! + wi, frames: n)
+            }
+        }
+        if worker.needsFit {
+            posted = true
+            worker.performFit()
+        }
+        wi += n
+    }
     checks.append(KernelCheck(
         name: "Fit leaves the callback",
-        pass: asked && !worker.needsFit && worker.missedPublish == 0,
-        detail: asked ? "job ran on performFit" : "no job was posted"
+        pass: posted && !worker.needsFit && worker.missedPublish == 0,
+        detail: "posted \(posted), pending \(worker.needsFit), missed \(worker.missedPublish)"
+    ))
+    let bleedSafe = Engine()
+    _ = render(bleedSafe, growingTone(0.5), 32)
+    let bleedPass = bleedSafe.bleed.allSatisfy { $0 == 1 }
+    checks.append(KernelCheck(
+        name: "Phase 1 bleed safety",
+        pass: bleedPass,
+        detail: bleedPass ? "all bands pass unchanged" : "a band was attenuated before a trained student exists"
     ))
     return checks
 }

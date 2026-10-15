@@ -8,8 +8,9 @@ let package = Package(
         .executable(name: "SI01", targets: ["SI01"]),
     ],
     targets: [
-        .target(name: "SI01Core"),
+        .target(name: "KernelStore", publicHeadersPath: "include"),
+        .target(name: "SI01Core", dependencies: ["KernelStore"]),
         .executableTarget(name: "SI01", dependencies: ["SI01Core"]),
-        .testTarget(name: "SI01CoreTests", dependencies: ["SI01Core"]),
+        .testTarget(name: "SI01CoreTests", dependencies: ["SI01Core", "KernelStore"]),
     ]
 )
