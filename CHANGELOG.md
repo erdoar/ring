@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.2 — 2026-10-15
+
+Ring FBD. The disk image is `Ring-FBD-0.5.2.dmg`. The app inside is named Ring FBD 0.5.2.
+
+### Changed
+
+- The window shrinks to 300 points wide.
+- The external monitor address is shown once, and the window text can be selected.
+- Trim is a knob on the right of each channel, ±8 dB. Mix at the bottom is bypass: the effect and the trim are both out. Mute is separate.
+- While a voice is present, bands at the learned room floor are lowered about 8 dB. Voice bands stay up.
+- The analysis transform is not on the callback. A buffer-size change does not reset the filters. The output sample is not allowed to exceed the dry sample.
+
+
 ## 0.2.0-alpha — 2026-10-14
 
 VST3 processor, bleed gains, and the LOW lookahead.
