@@ -6,7 +6,7 @@ ring-bench: black-box comparison of feedback suppressors on the same test signal
 
   ring-bench generate <stimuli-dir>
   ring-bench render si01 <stimuli-dir> <out-dir> [--low] [--block N]
-  ring-bench render au <plug-in name> <stimuli-dir> <out-dir> [--block N]
+  ring-bench render au <plug-in name> <stimuli-dir> <out-dir> [--block N] [--preroll seconds]
   ring-bench record <stimuli-dir> <out-dir>
   ring-bench analyse <stimuli-dir> <run-dir>... [--out report.md] [--calibrate]
   ring-bench plugins [filter]
@@ -90,6 +90,7 @@ do {
     case "render":
         let block = option("--block").flatMap(Int.init) ?? 256
         let low = flag("--low")
+        let preroll = option("--preroll").flatMap(Double.init) ?? 0
         guard let engine = args.first else { fail(usage) }
         if engine == "si01", args.count == 3 {
             print("SI-01 (\(low ? "low" : "zero") mode, \(block)-frame blocks)")
@@ -97,9 +98,17 @@ do {
         } else if engine == "au", args.count == 4 {
             let found = findEffect(args[1])
             guard let c = found.first else { fail("No Audio Unit effect matches \"\(args[1])\". Run `ring-bench plugins` to list them.") }
-            let plugin = try PluginRenderer(c, block: block)
-            print("\(c.manufacturerName) \(c.name) \(c.versionString), reports \(Int(plugin.unit.auAudioUnit.latency * sr)) samples latency, \(block)-frame blocks")
-            try renderAll(dir(args[2]), dir(args[3], create: true)) { _, x in try plugin.render(x) }
+            let probe = try PluginRenderer(c, block: block)
+            print("\(c.manufacturerName) \(c.name) \(c.versionString), reports \(Int(probe.unit.auAudioUnit.latency * sr)) samples latency, \(block)-frame blocks")
+            // A fresh instance per file, so no file inherits another's state or a trial's timer.
+            try renderAll(dir(args[2]), dir(args[3], create: true)) { s, x in
+                for attempt in 0 ..< 4 {
+                    let y = try PluginRenderer(c, block: block).render(x, preroll: preroll + Double(attempt) * 7)
+                    if !hasDropout(x, y) { return y }
+                    print("    dropout, retrying")
+                }
+                throw Wav.Failure(description: "\(s.name): every take dropped out")
+            }
         } else { fail(usage) }
     case "record":
         guard args.count == 2 else { fail(usage) }

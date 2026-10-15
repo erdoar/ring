@@ -11,11 +11,11 @@ B=.build/release/ring-bench
 $B selftest
 $B generate runs/stimuli
 $B render si01 runs/stimuli runs/si01
-$B render au Defeedback runs/stimuli runs/defeedback
+$B render au De-Feedback runs/stimuli runs/defeedback
 $B analyse runs/stimuli runs/si01 runs/defeedback --out runs/report.md
 ```
 
-`render au` needs the plug-in installed as an Audio Unit (for Defeedback, run its installer). `$B plugins` lists the effects the system can see. The plug-in runs offline at its default settings, fed the same signal on both channels, in 256-frame blocks (`--block N` to change).
+`render au` needs the plug-in installed as an Audio Unit (for De-Feedback, run its installer). Each file gets a fresh plug-in instance. A take where the output drops out while the input has signal (a trial mute) is rejected and rendered again with a longer pre-roll. `--preroll S` renders S seconds of silence first and drops them. `$B plugins` lists the effects the system can see. The plug-in runs offline at its default settings, fed the same signal on both channels, in 256-frame blocks (`--block N` to change).
 
 ## Test signals
 
@@ -39,6 +39,10 @@ All are 48 kHz mono. `stimuli.json` describes each one.
 ## Live hardware
 
 `$B record runs/stimuli runs/console` plays each file on the default output and records the default input, both at 48 kHz. Use it for a console insert or an app that owns the device. Record a run with the processor bypassed first. The latency it measures includes the device round trip, so subtract the bypass latency. Pass `--calibrate` to `analyse` to remove the level change measured on the sweep.
+
+## Results
+
+See [RESULTS.md](RESULTS.md).
 
 ## SI-01
 

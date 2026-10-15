@@ -48,7 +48,10 @@ final class PluginRenderer {
         self.block = block
     }
 
-    func render(_ x: [Float]) throws -> [Float] {
+    /// `preroll` seconds of silence are rendered first and dropped.
+    func render(_ x: [Float], preroll: Double = 0) throws -> [Float] {
+        let skip = Int(preroll * sr)
+        let x = [Float](repeating: 0, count: skip) + x
         let engine = AVAudioEngine(), player = AVAudioPlayerNode()
         let format = AVAudioFormat(standardFormatWithSampleRate: sr, channels: 2)!
         try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: AVAudioFrameCount(block))
@@ -75,8 +78,28 @@ final class PluginRenderer {
         }
         player.stop(); engine.stop()
         engine.detach(unit)
-        return out
+        return Array(out.dropFirst(skip))
     }
+}
+
+/// True if the output drops out while the input has signal: a trial plug-in's mute, not processing.
+/// A take is rejected when a 50 ms window is below -90 dBFS or 40 dB under the take's median gain.
+func hasDropout(_ x: [Float], _ y: [Float]) -> Bool {
+    let w = Int(0.05 * sr)
+    var ratios: [Double] = [], silent = false
+    var i = 0
+    while i + w <= min(x.count, y.count) {
+        let ex = x[i ..< i + w].reduce(0) { $0 + Double($1 * $1) } / Double(w)
+        let ey = y[i ..< i + w].reduce(0) { $0 + Double($1 * $1) } / Double(w)
+        if ex > 1e-5 {
+            if ey < 1e-9 { silent = true }
+            ratios.append(10 * log10(max(ey, 1e-20) / ex))
+        }
+        i += w
+    }
+    guard !ratios.isEmpty else { return false }
+    let median = ratios.sorted()[ratios.count / 2]
+    return silent || ratios.contains { $0 < median - 40 }
 }
 
 /// Plays each stimulus on the default output and records the default input, for hardware or console inserts.
