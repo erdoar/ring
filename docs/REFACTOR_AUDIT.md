@@ -37,9 +37,9 @@ This is a first safety-focused refactor tranche, not a release-ready DSP engine.
 
 ### P1 — device sample rate validation needs macOS verification
 
-`CoreAudioHost.open` now reads the device's nominal sample rate and rejects a device that is not at the requested 48 kHz. This check was added in this tranche, but the macOS-only Core Audio branch cannot be compiled or exercised in this Linux environment.
+`CoreAudioHost.open` now reads the device's nominal sample rate and rejects a device that is not at the requested 48 kHz. This check was added in this tranche. The Core Audio branch now compiles on macOS (after a fix to the IO proc's optional binding), but the check has not been exercised against a device.
 
-**Next:** compile and test the rate check on macOS hardware, including devices whose nominal rate is not writable or changes while the stream is stopped.
+**Next:** test the rate check on macOS hardware, including devices whose nominal rate is not writable or changes while the stream is stopped.
 
 ### P1 — callback output handling needs hardening
 
@@ -66,4 +66,11 @@ On Linux with Swift 6.2.1:
 - `swift test -c release`: **9 tests passed**.
 - The tests include app/session checks, synthetic kernel checks, atomic kernel-slot stability, and job-slot ownership.
 
-Not verified here: macOS Core Audio compilation/runtime, UI behavior, signing/permissions, physical device routing, Apple Silicon CPU budget, or real-room gain-before-feedback. The debug kernel test is very slow because the current callback path is computationally heavy; use release builds for functional tests, and treat that slowness as a further reason to benchmark and move analysis off the callback.
+On macOS 15, Apple Silicon, with Swift 6.2.4:
+
+- `swift build -c release`: builds after the IO proc fix (the Core Audio branch had never been compiled before).
+- `swift test -c release`: **9 tests passed**.
+- `scripts/bundle-macos.sh`: produces an ad-hoc signed `SI-01.app`.
+- Running the binary with no recognised flag starts the live engine on the default device; there is no `--help`.
+
+Not verified anywhere yet: Core Audio runtime behaviour, UI behavior, signing/permissions, physical device routing, Apple Silicon CPU budget, or real-room gain-before-feedback. The debug kernel test is very slow because the current callback path is computationally heavy; use release builds for functional tests, and treat that slowness as a further reason to benchmark and move analysis off the callback.
