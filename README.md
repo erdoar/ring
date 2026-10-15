@@ -2,7 +2,7 @@
 
 Causal vocal isolation for a digital-console insert.
 
-Download the disk image: [SI-01.dmg](https://github.com/erdoar/ring/releases/download/v0.3.2/SI-01.dmg) ([release](https://github.com/erdoar/ring/releases/tag/v0.3.2)). Open it and drag SI-01 onto Applications. The first time, try to open it, then use System Settings, Privacy and Security, Open Anyway. The first launch compiles the insert and needs the Xcode command line tools.
+Download the disk image: [SI-01.dmg](https://github.com/erdoar/ring/releases/download/v0.3.3/SI-01.dmg) ([release](https://github.com/erdoar/ring/releases/tag/v0.3.3)). The app inside is named SI-01 0.3.3. Drag that into Applications and open it. Leave any older SI-01 where it is. The first time, use System Settings, Privacy and Security, Open Anyway. The first launch compiles the insert and needs the Xcode command line tools.
 
 [SI-01](docs/SI-01.md) is the coding spec. The product is a macOS app that owns the USB device. The kernel in the note is what each channel runs. Code to that document.
 
