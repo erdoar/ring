@@ -68,7 +68,7 @@ public final class CoreAudioHost {
 
         let opaque = Unmanaged.passUnretained(self).toOpaque()
         let created = AudioDeviceCreateIOProcID(device, { _, _, input, _, output, _, context in
-            guard let context, let output, let input else { return noErr }
+            guard let context else { return noErr }
             let host = Unmanaged<CoreAudioHost>.fromOpaque(context).takeUnretainedValue()
             host.render(input: input, output: output)
             return noErr
