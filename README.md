@@ -8,6 +8,8 @@ Download the disk image: [Ring-FBD-0.5.2.dmg](https://github.com/erdoar/ring/rel
 
 The app package is [SI01](SI01/). `swift test` runs the session and the kernel. `swift run SI01 --self-test` prints the kernel checks. On a Mac, `scripts/bundle-macos.sh` builds the app. The Core Audio host is in that package and compiles on macOS only.
 
+[ring-bench](bench/) compares feedback suppressors from the outside. It renders the same test signals through SI-01 and through any Audio Unit plug-in, then measures howl cut, reaction time and damage to the voice.
+
 **Branch status:** this source snapshot is still a prototype, not a validated live vocal insert. See [the refactor audit](docs/REFACTOR_AUDIT.md) for the fixes in this pass and the remaining macOS/audio-thread blockers.
 
 It is not a manual for any commercial plug-in. Field numbers are cited from public tests and are labelled measured, reported, or estimated.
