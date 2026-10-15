@@ -12,6 +12,10 @@ private let histSize = 8192
 private let histMask = histSize - 1
 private let trackMem = 40
 private let jobSize = MAX_BLOCK + HORIZON + TAIL_TAPS + PART
+/// Feature snapshot: epoch, sequence, likelihood, voice hold, confirmed, then hz, gain, b0, b1, b2, a1, a2 per howl.
+private let featureHead = 5
+private let featurePerHowl = 7
+private let featureCount = featureHead + HOWLS * featurePerHowl
 
 private struct Coeff {
     var b0: Double = 0
@@ -57,12 +61,28 @@ private struct Ring {
     var newest: Double { at(count - 1) }
 }
 
+/// Detector state. Owned by whichever thread runs `performAnalysis()`.
 private struct Track {
     var hz: Double = 0
     var gain: Double = 1
     var mags = Ring()
     var freqs = Ring()
     var age = 0
+    var coeff = Coeff()
+
+    mutating func reset() {
+        hz = 0
+        gain = 1
+        mags.removeAll()
+        freqs.removeAll()
+        age = 0
+    }
+}
+
+/// Subtraction filter. Owned by the callback.
+private struct Notch {
+    var hz: Double = 0
+    var gain: Double = 1
     var coeff = Coeff()
     var x1 = 0.0
     var x2 = 0.0
@@ -91,7 +111,12 @@ public final class Engine {
     public var workerEnabled = true
     public var minInputAgo = 0
     public private(set) var lastTailHorizon = HORIZON
+    /// Also decides where gate and howl analysis run: `.inline` on the callback (tests), `.worker` on `performAnalysis()`.
     public var fitMode: FitMode = .inline
+    /// Partitions whose analysis frame was dropped because the worker still owned the previous one. Callback-owned.
+    public private(set) var missedAnalysis = 0
+    /// Feature snapshots the worker could not publish. Worker-owned.
+    public private(set) var missedFeatures = 0
 
     public var tail: [Double]
     public var howlGain: [Double]
@@ -99,10 +124,28 @@ public final class Engine {
     public var bleed: [Double]
     private let kernelStore: OpaquePointer?
     private let jobState: OpaquePointer?
+    private let analysisState: OpaquePointer?
+    private let featureStore: OpaquePointer?
 
+    // Worker-side analysis state.
     private let analyzer = Analyzer(count: GATE_WINDOW)
     private var frame = [Double](repeating: 0, count: GATE_WINDOW)
-    private var hist = [Double](repeating: 0, count: histSize)
+    private var tracks: [Track]
+    private var workerEpoch = 0
+    private var workerHold = 0
+    private var workerSeq = 0
+    private var features = [Double](repeating: 0, count: featureCount)
+
+    // Analysis hand-off, written by the callback under `analysisState`.
+    private let analysisFrame: UnsafeMutablePointer<Double>
+    private var analysisEpoch = 0
+    private var analysisSkipHowl = false
+
+    // Callback state. `hist` mirrors each sample at i and i + histSize so any window is contiguous.
+    private let hist: UnsafeMutablePointer<Double>
+    private var notches: [Notch]
+    private var epoch = 0
+    private var appliedSeq = 0
     private var histI = 0
     private var seen = 0
     private var hostBlock = 0
@@ -116,7 +159,6 @@ public final class Engine {
     private var slotTail = [Double](repeating: 0, count: 127)
     private var slotHowl = [Double](repeating: 0, count: 127)
     private var delayI = 0
-    private var tracks: [Track]
     private var tailEnergy = 0.0
     private var outEnergy = 0.0
     private var meterN = 0
@@ -130,12 +172,20 @@ public final class Engine {
     private var usedPeak = [Bool](repeating: false, count: 8)
     private var claimed = [Bool](repeating: false, count: BANDS)
     public var needsFit: Bool { si01_job_is_pending(jobState) }
+    public var needsAnalysis: Bool { si01_job_is_pending(analysisState) }
 
     public init(mode: Mode = .zero, sr: Double = SR) {
         self.mode = mode
         self.sr = sr
         kernelStore = si01_kernel_store_create(TAIL_TAPS)
         jobState = si01_job_state_create()
+        analysisState = si01_job_state_create()
+        featureStore = si01_kernel_store_create(featureCount)
+        analysisFrame = .allocate(capacity: GATE_WINDOW)
+        analysisFrame.initialize(repeating: 0, count: GATE_WINDOW)
+        hist = .allocate(capacity: 2 * histSize)
+        hist.initialize(repeating: 0, count: 2 * histSize)
+        notches = [Notch](repeating: Notch(), count: HOWLS)
         tail = [Double](repeating: 0, count: TAIL_TAPS)
         howlGain = [Double](repeating: 1, count: HOWLS)
         howlHz = [Double](repeating: 0, count: HOWLS)
@@ -146,6 +196,10 @@ public final class Engine {
     deinit {
         si01_kernel_store_destroy(kernelStore)
         si01_job_state_destroy(jobState)
+        si01_job_state_destroy(analysisState)
+        si01_kernel_store_destroy(featureStore)
+        analysisFrame.deallocate()
+        hist.deallocate()
     }
 
     /// Deterministic test seam for checking the subtraction cap.
@@ -175,10 +229,12 @@ public final class Engine {
         if hostBlock != 0 && frames != hostBlock { onBlockChange(frames) }
         hostBlock = frames
         bypassTarget = bypass ? 0 : 1
+        let floor = pow(10, -(CAP_DB * min(1, max(0, strength))) / 20)
+        let tailAgo = max(HORIZON, frames)
         for i in 0 ..< frames {
             let y = input[i]
             push(y)
-            let tailOutNow = applyTail(ago: max(HORIZON, frames), kernel: activeKernel)
+            let tailOutNow = applyTail(ago: tailAgo, kernel: activeKernel)
             let howlOutNow = howlSample(y)
             fifo += 1
             if holdSamples > 0 { holdSamples -= 1 }
@@ -188,8 +244,8 @@ public final class Engine {
                     if fitMode == .inline { fitFromLiveHistory() }
                     else { captureJob() }
                 }
-                analyzeGate()
-                updateHowl()
+                requestAnalysis()
+                applyFeatures()
             }
             var dry = y
             var tailOut = tailOutNow
@@ -206,7 +262,7 @@ public final class Engine {
                 slotHowl[slot] = howlOutNow
                 delayI = (slot + 1) % 127
             }
-            let broadband = cap(y: dry, broadband: tailOut + bleedOut)
+            let broadband = cap(y: dry, broadband: tailOut + bleedOut, floor: floor)
             let wet = dry - broadband - howlOut
             if bypassMix != bypassTarget {
                 let step = 1 / Double(frames)
@@ -242,6 +298,42 @@ public final class Engine {
         adapt(read: { self.job[$0] }, frozen: false, horizon: jobHorizon)
     }
 
+    /// Analysis worker entry. Does nothing when the callback has not handed over a frame.
+    public func performAnalysis() {
+        guard si01_job_take(analysisState) else { return }
+        defer { si01_job_finish_read(analysisState) }
+        if analysisEpoch != workerEpoch {
+            workerEpoch = analysisEpoch
+            for i in 0 ..< HOWLS { tracks[i].reset() }
+        }
+        for i in 0 ..< GATE_WINDOW { frame[i] = analysisFrame[i] }
+        let gate = analyzer.likelihood(frame, sr: sr)
+        if gate >= FREEZE_LINE { workerHold = 8 }
+        else if workerHold > 0 { workerHold -= 1 }
+        let confirmed = analysisSkipHowl ? 0 : updateHowl(likelihood: gate)
+        workerSeq += 1
+        features[0] = Double(workerEpoch)
+        features[1] = Double(workerSeq)
+        features[2] = gate
+        features[3] = Double(workerHold)
+        features[4] = Double(confirmed)
+        for i in 0 ..< HOWLS {
+            let base = featureHead + i * featurePerHowl
+            let c = tracks[i].coeff
+            features[base] = tracks[i].hz
+            features[base + 1] = tracks[i].gain
+            features[base + 2] = c.b0
+            features[base + 3] = c.b1
+            features[base + 4] = c.b2
+            features[base + 5] = c.a1
+            features[base + 6] = c.a2
+        }
+        let ok = features.withUnsafeBufferPointer {
+            si01_kernel_publish(featureStore, $0.baseAddress, $0.count)
+        }
+        if !ok { missedFeatures += 1 }
+    }
+
     private func at(_ ago: Int) -> Double {
         if ago < 0 || ago >= histSize || ago >= seen { return 0 }
         return hist[(histI - 1 - ago) & histMask]
@@ -249,25 +341,19 @@ public final class Engine {
 
     private func push(_ x: Double) {
         hist[histI] = x
+        hist[histI + histSize] = x
         histI = (histI + 1) & histMask
         seen += 1
     }
 
-    private func fillFrame() {
-        let n = GATE_WINDOW
-        for i in 0 ..< n { frame[i] = at(n - 1 - i) }
-    }
-
     private func applyTail(ago: Int, kernel: UnsafePointer<Double>?) -> Double {
         guard let kernel else { return 0 }
-        var sum = 0.0
-        for k in 0 ..< TAIL_TAPS { sum += kernel[k] * at(ago + k) }
-        return sum * dereverb
+        // kernel[k] * at(ago + k): walk the mirrored history backwards from `ago`.
+        let newest = ((histI - 1 - ago) & histMask) + histSize
+        return dot(kernel, 1, hist + newest, -1, TAIL_TAPS) * dereverb
     }
 
-    private func cap(y: Double, broadband: Double) -> Double {
-        let db = CAP_DB * min(1, max(0, strength))
-        let floor = pow(10, -db / 20)
+    private func cap(y: Double, broadband: Double, floor: Double) -> Double {
         let limit = abs(y) * (1 - floor)
         if abs(broadband) <= limit { return broadband }
         let sign: Double = broadband < 0 ? -1 : (broadband > 0 ? 1 : 0)
@@ -339,23 +425,51 @@ public final class Engine {
         }
         jobHorizon = max(HORIZON, hostBlock)
         let captureCount = min(jobSize, PART + jobHorizon + TAIL_TAPS)
-        for ago in 0 ..< captureCount { job[ago] = at(ago) }
+        job.withUnsafeMutableBufferPointer { dst in
+            for ago in 0 ..< captureCount { dst[ago] = at(ago) }
+        }
         jobFrozen = freeze || likelihood >= FREEZE_LINE || voiceHold > 0
         si01_job_finish_write(jobState)
     }
 
-    private func analyzeGate() {
+    /// Callback side: hand the newest gate window to the analysis worker. Never waits.
+    private func requestAnalysis() {
         if seen < GATE_WINDOW { return }
-        fillFrame()
-        likelihood = analyzer.likelihood(frame, sr: sr)
-        if likelihood >= FREEZE_LINE { voiceHold = 8 }
-        else if voiceHold > 0 { voiceHold -= 1 }
-        gateReady = true
+        guard si01_job_begin_write(analysisState) else {
+            missedAnalysis += 1
+            return
+        }
+        let start = (histI - GATE_WINDOW) & histMask
+        analysisFrame.update(from: hist + start, count: GATE_WINDOW)
+        analysisEpoch = epoch
+        analysisSkipHowl = fadeLeft > 0
+        si01_job_finish_write(analysisState)
+        if fitMode == .inline { performAnalysis() }
     }
 
-    private func updateHowl() {
-        if fadeLeft > 0 || seen < GATE_WINDOW { return }
-        fillFrame()
+    /// Callback side: adopt the newest feature snapshot if it belongs to the current block size.
+    private func applyFeatures() {
+        guard let f = si01_kernel_read_begin(featureStore) else { return }
+        defer { si01_kernel_read_end(featureStore) }
+        let seq = Int(f[1])
+        if seq == appliedSeq || Int(f[0]) != epoch { return }
+        appliedSeq = seq
+        likelihood = f[2]
+        voiceHold = Int(f[3])
+        gateReady = true
+        confirmedHowls = Int(f[4])
+        for i in 0 ..< HOWLS {
+            let base = featureHead + i * featurePerHowl
+            notches[i].hz = f[base]
+            notches[i].gain = f[base + 1]
+            notches[i].coeff = Coeff(b0: f[base + 2], b1: f[base + 3], b2: f[base + 4], a1: f[base + 5], a2: f[base + 6])
+            howlHz[i] = f[base]
+            howlGain[i] = f[base + 1]
+        }
+    }
+
+    /// Worker side. Returns the number of confirmed howls.
+    private func updateHowl(likelihood: Double) -> Int {
         analyzer.window(frame)
         analyzer.fftMag()
         let found = analyzer.findPeaks(frameLength: GATE_WINDOW, sr: sr)
@@ -376,10 +490,7 @@ public final class Engine {
             if best < 0 {
                 tracks[index].age += 1
                 if tracks[index].age > 4 {
-                    tracks[index].hz = 0
-                    tracks[index].gain = 1
-                    tracks[index].mags.removeAll()
-                    tracks[index].freqs.removeAll()
+                    tracks[index].reset()
                 }
                 continue
             }
@@ -427,25 +538,21 @@ public final class Engine {
                 usedCount += 1
             }
         }
-        confirmedHowls = confirmed
-        for i in 0 ..< HOWLS {
-            howlGain[i] = tracks[i].gain
-            howlHz[i] = tracks[i].hz
-        }
+        return confirmed
     }
 
     private func howlSample(_ x: Double) -> Double {
         var sub = 0.0
         for index in 0 ..< HOWLS {
-            if tracks[index].hz == 0 { continue }
-            let c = tracks[index].coeff
-            let y = c.b0 * x + c.b1 * tracks[index].x1 + c.b2 * tracks[index].x2
-                - c.a1 * tracks[index].y1 - c.a2 * tracks[index].y2
-            tracks[index].x2 = tracks[index].x1
-            tracks[index].x1 = x
-            tracks[index].y2 = tracks[index].y1
-            tracks[index].y1 = y
-            sub += (1 - tracks[index].gain) * y
+            if notches[index].hz == 0 { continue }
+            let c = notches[index].coeff
+            let y = c.b0 * x + c.b1 * notches[index].x1 + c.b2 * notches[index].x2
+                - c.a1 * notches[index].y1 - c.a2 * notches[index].y2
+            notches[index].x2 = notches[index].x1
+            notches[index].x1 = x
+            notches[index].y2 = notches[index].y1
+            notches[index].y1 = y
+            sub += (1 - notches[index].gain) * y
         }
         return sub
     }
@@ -457,13 +564,14 @@ public final class Engine {
         fadeLen = max(1, n)
         crossfades += 1
         confirmedHowls = 0
+        // The worker resets its tracks when it sees the new epoch; older snapshots are ignored.
+        epoch += 1
         for i in 0 ..< HOWLS {
-            tracks[i].hz = 0
-            tracks[i].gain = 1
-            tracks[i].mags.removeAll()
-            tracks[i].freqs.removeAll()
-            tracks[i].age = 0
-            tracks[i].clearFilterState()
+            notches[i].hz = 0
+            notches[i].gain = 1
+            notches[i].clearFilterState()
+            howlGain[i] = 1
+            howlHz[i] = 0
         }
     }
 }

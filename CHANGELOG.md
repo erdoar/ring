@@ -10,11 +10,14 @@
 - Disabled the hand-written bleed-band heuristic. Phase 1 passes all bands unchanged until a causal student is trained and validated.
 - Applied a protected horizon of `max(128, hostBlockFrames)` to the tail FIR and fitting path.
 - Fixed the Core Audio IO proc so the macOS host compiles: the input and output buffer lists are non-optional, so only the context is checked.
+- Moved gate analysis and howl tracking off the audio callback. The callback hands a preallocated 1024-sample frame to the worker and adopts its latest feature snapshot through an atomic three-slot store; it keeps only the notch filters, the tail FIR and the subtraction.
+- Replaced the pure-Swift FFT, windowing, autocorrelation and the 512-tap tail FIR with vDSP (scalar fallback where Accelerate is unavailable).
+- Added a release-mode test timing the worst-case callback for eight engines at 48 kHz: 52 µs for a 32-frame block against a 667 µs deadline (1246 µs before).
 - Added kernel-store/job-state tests and a source-level risk audit at [`docs/REFACTOR_AUDIT.md`](docs/REFACTOR_AUDIT.md).
 
 ### Verification
 
-- `cd SI01 && swift test -c release` — 9 tests pass on Linux / Swift 6.2.1 and on macOS 15 (Apple Silicon) / Swift 6.2.4.
+- `cd SI01 && swift test -c release` — 10 tests pass on macOS 15 (Apple Silicon) / Swift 6.2.4. Linux has not been re-run since the vDSP change.
 - `scripts/bundle-macos.sh` builds and ad-hoc signs `SI-01.app` on macOS.
 - This does not verify Core Audio routing at runtime, the macOS UI, Apple Silicon callback deadlines, or real-room feedback performance. See the audit for blockers.
 

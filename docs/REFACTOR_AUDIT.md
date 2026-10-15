@@ -17,11 +17,15 @@ This is a first safety-focused refactor tranche, not a release-ready DSP engine.
 
 ## Findings still open
 
-### P0 — real-time deadline is not demonstrated
+### Resolved — analysis ran on the audio callback
 
-`Engine.render` still performs gate analysis and howl tracking in the callback. `Analyzer` runs a pure-Swift 1024-point FFT, performs trigonometric work, scans peaks, and refines frequencies. The callback also runs an up-to-512-tap FIR per sample. A release-mode synthetic test is not a substitute for timing the actual callback on the target M1 with eight engines. The spec's `vDSP` fast path is not implemented yet.
+Gate analysis and howl tracking (FFT, peak scan, autocorrelation refinement, track bookkeeping) now run in `Engine.performAnalysis()` on the worker. At each 128-sample partition the callback only copies the newest 1024-sample window into a preallocated frame behind an atomic job state (dropping it and counting `missedAnalysis` if the worker still owns the last one) and adopts the newest feature snapshot (likelihood, voice hold, and per-howl frequency, gain and biquad coefficients) from a three-slot atomic store. The callback keeps only the notch filter state, the tail FIR and the subtraction. A block-size change bumps an epoch; the worker resets its tracks on the new epoch and the callback ignores older snapshots.
 
-**Next:** move nonessential analysis to a worker using bounded, preallocated feature snapshots; keep only the minimum detector state update and subtraction in the callback. Add worst-case callback timing and deadline-miss tests on macOS.
+The FFT, window, autocorrelation and per-sample 512-tap FIR use vDSP. History is mirrored so the FIR and the frame copy read contiguous memory.
+
+`DeadlineTests` times the real render path for eight engines at 48 kHz with the worker running. On an Apple Silicon Mac (release build): 32-frame block worst 52 µs against a 667 µs deadline (main before this change: 1246 µs, a miss); 128-frame block worst 260 µs against 2667 µs (main: 1608 µs).
+
+**Still open:** this is a test-thread measurement, not a Core Audio IO thread on the target M1 under load. Confirm on hardware with real-time thread priority and a deadline-miss counter in the host.
 
 ### P0 — audio-device routing is incomplete
 
@@ -69,8 +73,8 @@ On Linux with Swift 6.2.1:
 On macOS 15, Apple Silicon, with Swift 6.2.4:
 
 - `swift build -c release`: builds after the IO proc fix (the Core Audio branch had never been compiled before).
-- `swift test -c release`: **9 tests passed**.
+- `swift test -c release`: **9 tests passed**; after moving analysis off the callback, **10 tests passed**, including the eight-engine deadline test.
 - `scripts/bundle-macos.sh`: produces an ad-hoc signed `SI-01.app`.
 - Running the binary with no recognised flag starts the live engine on the default device; there is no `--help`.
 
-Not verified anywhere yet: Core Audio runtime behaviour, UI behavior, signing/permissions, physical device routing, Apple Silicon CPU budget, or real-room gain-before-feedback. The debug kernel test is very slow because the current callback path is computationally heavy; use release builds for functional tests, and treat that slowness as a further reason to benchmark and move analysis off the callback.
+Not verified anywhere yet: Core Audio runtime behaviour, UI behavior, signing/permissions, physical device routing, Apple Silicon CPU budget, or real-room gain-before-feedback. Use release builds for functional tests; the deadline test skips itself in debug builds. Linux uses scalar fallbacks for the vDSP paths and has not been re-run since that change.

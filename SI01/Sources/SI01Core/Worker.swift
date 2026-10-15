@@ -1,6 +1,6 @@
 import Foundation
 
-/// Drains tail fits off the audio callback. The callback never waits for this worker.
+/// Drains gate/howl analysis and tail fits off the audio callback. The callback never waits for this worker.
 final class FitWorker {
     private var engines: [Engine] = []
     private let stateLock = NSLock()
@@ -31,15 +31,21 @@ final class FitWorker {
             }
             while self.shouldRun {
                 var worked = false
-                for engine in self.engines where engine.needsFit {
-                    engine.performFit()
-                    worked = true
+                for engine in self.engines {
+                    if engine.needsAnalysis {
+                        engine.performAnalysis()
+                        worked = true
+                    }
+                    if engine.needsFit {
+                        engine.performFit()
+                        worked = true
+                    }
                 }
                 if !worked { Thread.sleep(forTimeInterval: 0.0005) }
             }
             completion.signal()
         }
-        worker.name = "SI01 fit"
+        worker.name = "SI01 analysis"
         thread = worker
         worker.start()
         stateLock.unlock()
@@ -57,7 +63,8 @@ final class FitWorker {
 
         // Joining here is safe: stop is called by the control thread, never the audio callback.
         completion?.wait()
-        for engine in engines where engine.needsFit {
+        for engine in engines {
+            engine.performAnalysis()
             engine.performFit()
         }
 

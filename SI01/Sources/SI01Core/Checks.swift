@@ -165,6 +165,7 @@ public func kernelChecks() -> [KernelCheck] {
     worker.fitMode = .worker
     let workerSignal = growingTone(0.5)
     var posted = false
+    var analysed = false
     var workerOut = [Double](repeating: 0, count: workerSignal.count)
     var wi = 0
     while wi < workerSignal.count {
@@ -174,6 +175,10 @@ public func kernelChecks() -> [KernelCheck] {
                 worker.render(input: src.baseAddress! + wi, output: dst.baseAddress! + wi, frames: n)
             }
         }
+        if worker.needsAnalysis {
+            analysed = true
+            worker.performAnalysis()
+        }
         if worker.needsFit {
             posted = true
             worker.performFit()
@@ -181,9 +186,9 @@ public func kernelChecks() -> [KernelCheck] {
         wi += n
     }
     checks.append(KernelCheck(
-        name: "Fit leaves the callback",
-        pass: posted && !worker.needsFit && worker.missedPublish == 0,
-        detail: "posted \(posted), pending \(worker.needsFit), missed \(worker.missedPublish)"
+        name: "Analysis and fit leave the callback",
+        pass: analysed && posted && !worker.needsFit && worker.missedPublish == 0 && worker.missedAnalysis == 0,
+        detail: "analysed \(analysed), posted \(posted), pending \(worker.needsFit), missed \(worker.missedPublish)/\(worker.missedAnalysis)"
     ))
     let bleedSafe = Engine()
     _ = render(bleedSafe, growingTone(0.5), 32)
