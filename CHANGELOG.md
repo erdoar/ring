@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — benchmark
+## 0.6.0 — 2026-10-15 — benchmark
 
 ### Added
 
