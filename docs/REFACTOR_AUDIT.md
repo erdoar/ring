@@ -70,7 +70,7 @@ On macOS 15, Apple Silicon, with Swift 6.2.4:
 
 - `swift build -c release`: builds after the IO proc fix (the Core Audio branch had never been compiled before).
 - `swift test -c release`: **9 tests passed**.
-- `scripts/bundle-macos.sh`: produces an ad-hoc signed `SI-01.app`.
+- `scripts/bundle-macos.sh`: produces an ad-hoc signed `build/Ring <version>/Ring <version>.app`.
 - Running the binary with no recognised flag starts the live engine on the default device; there is no `--help`.
 
 Not verified anywhere yet: Core Audio runtime behaviour, UI behavior, signing/permissions, physical device routing, Apple Silicon CPU budget, or real-room gain-before-feedback. The debug kernel test is very slow because the current callback path is computationally heavy; use release builds for functional tests, and treat that slowness as a further reason to benchmark and move analysis off the callback.
