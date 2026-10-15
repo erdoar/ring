@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.5 — 2026-10-15 — entry
+
+The entry file is no longer named `main.swift`. Swift treats that name as a script, which cannot also carry `@main`.
+
 ## 0.6.4 — 2026-10-15 — deployment
 
 The package now requires macOS 13, so the accent color and the system fonts compile.
