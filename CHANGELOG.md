@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — safety refactor tranche
+
+### Changed
+
+- Replaced the tail kernel's ineffective sequence-counter loop with an atomic three-slot publication store. A render pins one immutable kernel snapshot for the entire host block.
+- Added an atomic single-job handoff between callback and fit worker; the callback does not overwrite a job owned by the worker.
+- Worker shutdown now waits on the control thread before draining pending work.
+- Disabled the hand-written bleed-band heuristic. Phase 1 passes all bands unchanged until a causal student is trained and validated.
+- Applied a protected horizon of `max(128, hostBlockFrames)` to the tail FIR and fitting path.
+- Fixed the Core Audio IO proc so the macOS host compiles: the input and output buffer lists are non-optional, so only the context is checked.
+- Added kernel-store/job-state tests and a source-level risk audit at [`docs/REFACTOR_AUDIT.md`](docs/REFACTOR_AUDIT.md).
+
+### Verification
+
+- `cd SI01 && swift test -c release` — 9 tests pass on Linux / Swift 6.2.1 and on macOS 15 (Apple Silicon) / Swift 6.2.4.
+- `scripts/bundle-macos.sh` builds and ad-hoc signs `SI-01.app` on macOS.
+- This does not verify Core Audio routing at runtime, the macOS UI, Apple Silicon callback deadlines, or real-room feedback performance. See the audit for blockers.
+
 ## 0.5.2 — 2026-10-15
 
 Ring FBD. The disk image is `Ring-FBD-0.5.2.dmg`. The app inside is named Ring FBD 0.5.2.

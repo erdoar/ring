@@ -1,20 +1,35 @@
 import Foundation
 
-/// Drains tail fits. The callback only posts the job.
+/// Drains tail fits off the audio callback. The callback never waits for this worker.
 final class FitWorker {
     private var engines: [Engine] = []
+    private let stateLock = NSLock()
     private var running = false
     private var thread: Thread?
+    private var finished: DispatchSemaphore?
 
     func bind(_ engines: [Engine]) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        precondition(thread == nil, "Cannot replace engines while the worker is running")
         self.engines = engines
     }
 
     func start() {
-        guard thread == nil else { return }
+        stateLock.lock()
+        guard thread == nil else {
+            stateLock.unlock()
+            return
+        }
         running = true
-        let thread = Thread { [weak self] in
-            while let self, self.running {
+        let completion = DispatchSemaphore(value: 0)
+        finished = completion
+        let worker = Thread { [weak self] in
+            guard let self else {
+                completion.signal()
+                return
+            }
+            while self.shouldRun {
                 var worked = false
                 for engine in self.engines where engine.needsFit {
                     engine.performFit()
@@ -22,15 +37,39 @@ final class FitWorker {
                 }
                 if !worked { Thread.sleep(forTimeInterval: 0.0005) }
             }
+            completion.signal()
         }
-        thread.name = "SI01 fit"
-        thread.start()
-        self.thread = thread
+        worker.name = "SI01 fit"
+        thread = worker
+        worker.start()
+        stateLock.unlock()
     }
 
     func stop() {
+        stateLock.lock()
+        guard thread != nil else {
+            stateLock.unlock()
+            return
+        }
         running = false
-        for engine in engines { engine.performFit() }
+        let completion = finished
+        stateLock.unlock()
+
+        // Joining here is safe: stop is called by the control thread, never the audio callback.
+        completion?.wait()
+        for engine in engines where engine.needsFit {
+            engine.performFit()
+        }
+
+        stateLock.lock()
         thread = nil
+        finished = nil
+        stateLock.unlock()
+    }
+
+    private var shouldRun: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return running
     }
 }

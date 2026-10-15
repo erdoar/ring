@@ -1,4 +1,5 @@
 import Foundation
+import KernelStore
 
 public enum FitMode {
     /// Same sample timing as the note. Used by the kernel tests.
@@ -10,7 +11,7 @@ public enum FitMode {
 private let histSize = 8192
 private let histMask = histSize - 1
 private let trackMem = 40
-private let jobSize = 768
+private let jobSize = MAX_BLOCK + HORIZON + TAIL_TAPS + PART
 
 private struct Coeff {
     var b0: Double = 0
@@ -88,14 +89,16 @@ public final class Engine {
     public var crossfades = 0
     public var confirmedHowls = 0
     public var workerEnabled = true
-    public var minInputAgo = HORIZON
+    public var minInputAgo = 0
+    public private(set) var lastTailHorizon = HORIZON
     public var fitMode: FitMode = .inline
 
     public var tail: [Double]
     public var howlGain: [Double]
     public var howlHz: [Double]
     public var bleed: [Double]
-    private var seq: UInt32 = 0
+    private let kernelStore: OpaquePointer?
+    private let jobState: OpaquePointer?
 
     private let analyzer = Analyzer(count: GATE_WINDOW)
     private var frame = [Double](repeating: 0, count: GATE_WINDOW)
@@ -112,54 +115,47 @@ public final class Engine {
     private var slotDry = [Double](repeating: 0, count: 127)
     private var slotTail = [Double](repeating: 0, count: 127)
     private var slotHowl = [Double](repeating: 0, count: 127)
-    private var slotBand: [[Double]]
     private var delayI = 0
     private var tracks: [Track]
-    private var bands: [Track]
-    private var bleedApplied: [Double]
-    private var bleedPending: [Double]
     private var tailEnergy = 0.0
     private var outEnergy = 0.0
     private var meterN = 0
     private var xbuf = [Double](repeating: 0, count: TAIL_TAPS)
     private var gbuf = [Double](repeating: 0, count: TAIL_TAPS)
-    private var scratch = [Double](repeating: 0, count: BANDS)
     private var voiceHold = 0
     private var gateReady = false
     private var job = [Double](repeating: 0, count: jobSize)
     private var jobFrozen = false
+    private var jobHorizon = HORIZON
     private var usedPeak = [Bool](repeating: false, count: 8)
     private var claimed = [Bool](repeating: false, count: BANDS)
-    public private(set) var needsFit = false
+    public var needsFit: Bool { si01_job_is_pending(jobState) }
 
     public init(mode: Mode = .zero, sr: Double = SR) {
         self.mode = mode
         self.sr = sr
+        kernelStore = si01_kernel_store_create(TAIL_TAPS)
+        jobState = si01_job_state_create()
         tail = [Double](repeating: 0, count: TAIL_TAPS)
         howlGain = [Double](repeating: 1, count: HOWLS)
         howlHz = [Double](repeating: 0, count: HOWLS)
         bleed = [Double](repeating: 1, count: BANDS)
-        bleedApplied = [Double](repeating: 1, count: BANDS)
-        bleedPending = [Double](repeating: 1, count: BANDS)
         tracks = [Track](repeating: Track(), count: HOWLS)
-        slotBand = Array(repeating: [Double](repeating: 0, count: 127), count: BANDS)
-        let lo = 80.0
-        let hi = min(12000, sr * 0.45)
-        let ratio = hi / lo
-        var built: [Track] = []
-        built.reserveCapacity(BANDS)
-        for i in 0 ..< BANDS {
-            let a = lo * pow(ratio, Double(i) / Double(BANDS))
-            let b = lo * pow(ratio, Double(i + 1) / Double(BANDS))
-            let hz = sqrt(a * b)
-            let width = b - a
-            let q = max(0.7, hz / width)
-            var band = Track()
-            band.hz = hz
-            band.coeff = bandpass(hz: hz, sr: sr, q: q)
-            built.append(band)
+    }
+
+    deinit {
+        si01_kernel_store_destroy(kernelStore)
+        si01_job_state_destroy(jobState)
+    }
+
+    /// Deterministic test seam for checking the subtraction cap.
+    public func setTailForTesting(_ taps: [Double]) {
+        guard taps.count == TAIL_TAPS else { return }
+        tail = taps
+        let ok = taps.withUnsafeBufferPointer {
+            si01_kernel_publish(kernelStore, $0.baseAddress, $0.count)
         }
-        bands = built
+        if !ok { missedPublish += 1 }
     }
 
     public var latency: Int { mode.delaySamples }
@@ -173,15 +169,17 @@ public final class Engine {
 
     public func render(input: UnsafePointer<Double>, output: UnsafeMutablePointer<Double>, frames: Int) {
         if frames < 1 || frames > MAX_BLOCK { return }
+        let activeKernel = si01_kernel_read_begin(kernelStore)
+        defer { si01_kernel_read_end(kernelStore) }
+        lastTailHorizon = max(lastTailHorizon, max(HORIZON, frames))
         if hostBlock != 0 && frames != hostBlock { onBlockChange(frames) }
         hostBlock = frames
         bypassTarget = bypass ? 0 : 1
         for i in 0 ..< frames {
             let y = input[i]
             push(y)
-            let tailOutNow = applyTail(ago: HORIZON)
+            let tailOutNow = applyTail(ago: max(HORIZON, frames), kernel: activeKernel)
             let howlOutNow = howlSample(y)
-            tickBands(y)
             fifo += 1
             if holdSamples > 0 { holdSamples -= 1 }
             if fifo >= PART {
@@ -192,24 +190,17 @@ public final class Engine {
                 }
                 analyzeGate()
                 updateHowl()
-                updateBleed()
             }
             var dry = y
             var tailOut = tailOutNow
             var howlOut = howlOutNow
-            var bleedOut = mixBleed(scratch)
+            var bleedOut = 0.0 // Phase 1: learned bleed suppression is deliberately disabled.
             if mode == .low {
                 let slot = delayI
                 dry = slotDry[slot]
                 tailOut = slotTail[slot]
                 howlOut = slotHowl[slot]
                 bleedOut = 0
-                for b in 0 ..< BANDS {
-                    let delayed = slotBand[b][slot]
-                    slotBand[b][slot] = scratch[b]
-                    let gain = bleedApplied[b]
-                    if gain < 0.999 { bleedOut += (1 - gain) * delayed }
-                }
                 slotDry[slot] = y
                 slotTail[slot] = tailOutNow
                 slotHowl[slot] = howlOutNow
@@ -238,8 +229,8 @@ public final class Engine {
 
     /// Worker entry. Does nothing when the callback has not closed a partition.
     public func performFit() {
-        guard needsFit else { return }
-        needsFit = false
+        guard si01_job_take(jobState) else { return }
+        defer { si01_job_finish_read(jobState) }
         if !workerEnabled {
             missedPublish += 1
             return
@@ -248,7 +239,7 @@ public final class Engine {
             publish(gbufIsTail: true)
             return
         }
-        adapt(read: { self.job[$0] }, frozen: false)
+        adapt(read: { self.job[$0] }, frozen: false, horizon: jobHorizon)
     }
 
     private func at(_ ago: Int) -> Double {
@@ -267,11 +258,10 @@ public final class Engine {
         for i in 0 ..< n { frame[i] = at(n - 1 - i) }
     }
 
-    private func applyTail(ago: Int) -> Double {
-        var guardCount = 0
-        while seq & 1 == 1 && guardCount < 4 { guardCount += 1 }
+    private func applyTail(ago: Int, kernel: UnsafePointer<Double>?) -> Double {
+        guard let kernel else { return 0 }
         var sum = 0.0
-        for k in 0 ..< TAIL_TAPS { sum += tail[k] * at(ago + k) }
+        for k in 0 ..< TAIL_TAPS { sum += kernel[k] * at(ago + k) }
         return sum * dereverb
     }
 
@@ -285,18 +275,22 @@ public final class Engine {
     }
 
     private func publish(gbufIsTail: Bool) {
-        seq &+= 1
-        if !gbufIsTail {
-            for i in 0 ..< TAIL_TAPS { tail[i] = gbuf[i] }
+        guard !gbufIsTail else { return }
+        let ok = gbuf.withUnsafeBufferPointer {
+            si01_kernel_publish(kernelStore, $0.baseAddress, $0.count)
         }
-        seq &+= 1
+        guard ok else {
+            missedPublish += 1
+            return
+        }
+        tail = gbuf
     }
 
     private func fit(read: (Int) -> Double) {
-        adapt(read: read, frozen: jobFrozen || freeze || likelihood >= FREEZE_LINE || voiceHold > 0)
+        adapt(read: read, frozen: jobFrozen || freeze || likelihood >= FREEZE_LINE || voiceHold > 0, horizon: max(HORIZON, hostBlock))
     }
 
-    private func adapt(read: (Int) -> Double, frozen: Bool) {
+    private func adapt(read: (Int) -> Double, frozen: Bool, horizon: Int = HORIZON) {
         if frozen {
             publish(gbufIsTail: true)
             return
@@ -308,8 +302,8 @@ public final class Engine {
             var power = 1e-8
             var pred = 0.0
             for k in 0 ..< TAIL_TAPS {
-                let ago = t + HORIZON + k
-                if ago < minInputAgo { minInputAgo = ago }
+                let ago = t + horizon + k
+                if minInputAgo == 0 || ago < minInputAgo { minInputAgo = ago }
                 let s = read(ago)
                 xbuf[k] = s
                 power += s * s
@@ -339,10 +333,15 @@ public final class Engine {
             return
         }
         if holdSamples > 0 { return }
-        for ago in 0 ..< jobSize { job[ago] = at(ago) }
-        for i in 0 ..< TAIL_TAPS { gbuf[i] = tail[i] }
+        guard si01_job_begin_write(jobState) else {
+            missedPublish += 1
+            return
+        }
+        jobHorizon = max(HORIZON, hostBlock)
+        let captureCount = min(jobSize, PART + jobHorizon + TAIL_TAPS)
+        for ago in 0 ..< captureCount { job[ago] = at(ago) }
         jobFrozen = freeze || likelihood >= FREEZE_LINE || voiceHold > 0
-        needsFit = true
+        si01_job_finish_write(jobState)
     }
 
     private func analyzeGate() {
@@ -447,99 +446,6 @@ public final class Engine {
             tracks[index].y2 = tracks[index].y1
             tracks[index].y1 = y
             sub += (1 - tracks[index].gain) * y
-        }
-        return sub
-    }
-
-    private func bandOf(_ hz: Double) -> Int {
-        let lo = 80.0
-        let hi = min(12000, sr * 0.45)
-        if hz < lo || hz >= hi { return -1 }
-        let t = log(hz / lo) / log(hi / lo)
-        return max(0, min(BANDS - 1, Int((t * Double(BANDS)).rounded(.down))))
-    }
-
-    private func updateBleed() {
-        if seen < GATE_WINDOW { return }
-        fillFrame()
-        var energy = 0.0
-        for sample in frame { energy += sample * sample }
-        energy /= Double(frame.count)
-        let voiced = likelihood >= FREEZE_LINE || voiceHold > 0
-        for i in 0 ..< BANDS { claimed[i] = voiced }
-        if energy >= 1e-6 && !voiced {
-            analyzer.window(frame)
-            analyzer.fftMag()
-            let found = analyzer.findPeaks(frameLength: GATE_WINDOW, sr: sr)
-            for i in 0 ..< found {
-                let band = bandOf(analyzer.peaks[i].hz)
-                if band >= 0 && analyzer.peaks[i].harmonic >= 0.2 { claimed[band] = true }
-            }
-            for track in tracks {
-                if track.hz == 0 || track.freqs.count < 8 { continue }
-                var mean = 0.0
-                for i in 0 ..< track.freqs.count { mean += track.freqs.at(i) }
-                mean /= Double(track.freqs.count)
-                var varSum = 0.0
-                for i in 0 ..< track.freqs.count {
-                    let d = track.freqs.at(i) - mean
-                    varSum += d * d
-                }
-                let stdev = sqrt(varSum / Double(track.freqs.count))
-                let band = bandOf(track.hz)
-                if band >= 0 && stdev > 6 { claimed[band] = true }
-            }
-        }
-        let magReady = energy >= 1e-6
-        if magReady {
-            analyzer.window(frame)
-            analyzer.fftMag()
-        }
-        let binHz = sr / Double(GATE_WINDOW)
-        let hi = min(12000, sr * 0.45)
-        for i in 0 ..< BANDS {
-            var bandEnergy = 0.0
-            if magReady {
-                let loHz = 80 * pow(hi / 80, Double(i) / Double(BANDS))
-                let hiHz = 80 * pow(hi / 80, Double(i + 1) / Double(BANDS))
-                let a = max(1, Int((loHz / binHz).rounded(.down)))
-                let b = min(analyzer.mag.count - 1, Int((hiHz / binHz).rounded(.up)))
-                if a <= b {
-                    for k in a ... b { bandEnergy += analyzer.mag[k] * analyzer.mag[k] }
-                }
-            }
-            let audible = bandEnergy > energy * Double(frame.count) * 0.02
-            let target = claimed[i] || !audible ? 1.0 : 0.0
-            let g = bleed[i]
-            bleed[i] = g + (target - g) * 0.85
-        }
-        if mode == .low {
-            for i in 0 ..< BANDS { bleedApplied[i] = bleed[i] }
-        } else {
-            for i in 0 ..< BANDS {
-                bleedApplied[i] = bleedPending[i]
-                bleedPending[i] = bleed[i]
-            }
-        }
-    }
-
-    private func tickBands(_ x: Double) {
-        for i in 0 ..< BANDS {
-            let c = bands[i].coeff
-            let y = c.b0 * x + c.b1 * bands[i].x1 + c.b2 * bands[i].x2 - c.a1 * bands[i].y1 - c.a2 * bands[i].y2
-            bands[i].x2 = bands[i].x1
-            bands[i].x1 = x
-            bands[i].y2 = bands[i].y1
-            bands[i].y1 = y
-            scratch[i] = y
-        }
-    }
-
-    private func mixBleed(_ bands: [Double]) -> Double {
-        var sub = 0.0
-        for i in 0 ..< BANDS {
-            let gain = bleedApplied[i]
-            if gain < 0.999 { sub += (1 - gain) * bands[i] }
         }
         return sub
     }

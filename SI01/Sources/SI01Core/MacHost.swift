@@ -48,11 +48,27 @@ public final class CoreAudioHost {
         if status != noErr { throw SessionError.block }
         var got = frames
         var gotSize = size
-        AudioObjectGetPropertyData(device, &address, 0, nil, &gotSize, &got)
-        if got != frames { throw SessionError.block }
+        let readFrames = AudioObjectGetPropertyData(device, &address, 0, nil, &gotSize, &got)
+        if readFrames != noErr || got != frames { throw SessionError.block }
+
+        // Do not silently run 48 kHz DSP against a device configured at another rate.
+        var rateAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var actualRate: Float64 = 0
+        var rateSize = UInt32(MemoryLayout<Float64>.size)
+        let readRate = AudioObjectGetPropertyData(
+            device, &rateAddress, 0, nil, &rateSize, &actualRate
+        )
+        guard readRate == noErr, abs(actualRate - request.sampleRate) < 0.5 else {
+            throw SessionError.block
+        }
+
         let opaque = Unmanaged.passUnretained(self).toOpaque()
         let created = AudioDeviceCreateIOProcID(device, { _, _, input, _, output, _, context in
-            guard let context, let output, let input else { return noErr }
+            guard let context else { return noErr }
             let host = Unmanaged<CoreAudioHost>.fromOpaque(context).takeUnretainedValue()
             host.render(input: input, output: output)
             return noErr
