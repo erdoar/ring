@@ -123,6 +123,24 @@ public final class CoreAudioHost {
         app.stop()
     }
 
+    public var channelCount: Int { app.session.channels }
+    public var mode: Mode { app.session.mode }
+    public func snapshot() -> String? { app.snapshot() }
+    public func setTrim(channel: Int, db: Double) { app.setTrim(channel: channel, db: db) }
+    public func trimDb(channel: Int) -> Double { app.trimDb(channel: channel) }
+    public func setMix(channel: Int, mix: Double) { app.setMix(channel: channel, mix: mix) }
+    public func mix(channel: Int) -> Double { app.mix(channel: channel) }
+    public func setMuted(channel: Int, muted: Bool) { app.setMuted(channel: channel, muted: muted) }
+    public func isMuted(channel: Int) -> Bool { app.isMuted(channel: channel) }
+
+    /// Stop, apply, and start again. The device stays open.
+    public func restart(channels: Int, mode: Mode) throws {
+        stop()
+        try app.setChannels(channels)
+        try app.setMode(mode)
+        try start()
+    }
+
     /// Default input, 48 kHz, 32 frames. Returns when the process is signalled.
     public static func runDefault(channels: Int) throws {
         var device = AudioDeviceID(0)

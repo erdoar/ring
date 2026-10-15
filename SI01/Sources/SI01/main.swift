@@ -37,9 +37,9 @@ enum SI01Main {
             app.stop()
             return
         }
-        fputs("SI-01 runs on macOS. --check exercises the session. --self-test runs the kernel.\n", stderr)
+        fputs("Ring 0.6.2 runs on macOS. --check exercises the session. --self-test runs the kernel.\n", stderr)
         #if os(macOS)
-        try CoreAudioHost.runDefault(channels: 1)
+        try InsertLaunch.run()
         #endif
     }
 }

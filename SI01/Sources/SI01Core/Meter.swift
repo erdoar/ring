@@ -8,6 +8,7 @@ public struct Meter {
     public static let maxChannels = 8
     private var likelihood = [Float](repeating: 0, count: maxChannels)
     private var cutDb = [Float](repeating: 0, count: maxChannels)
+    private var inputDb = [Float](repeating: -120, count: maxChannels)
     private var channelCount = 1
     private var delay = 0
     private var mode = Mode.zero
@@ -30,6 +31,7 @@ public struct Meter {
         mode: Mode,
         likelihood: Float,
         cutDb: Float,
+        inputDb: Float? = nil,
         missedAdd: UInt32 = 0,
         overrunAdd: UInt32 = 0
     ) {
@@ -40,6 +42,10 @@ public struct Meter {
         if channel >= 0 && channel < Self.maxChannels {
             self.likelihood[channel] = likelihood
             self.cutDb[channel] = cutDb
+            if let inputDb {
+                let released = self.inputDb[channel] - 0.02
+                self.inputDb[channel] = max(inputDb, released)
+            }
         }
         missed &+= missedAdd
         overrun &+= overrunAdd
@@ -63,17 +69,21 @@ public struct Meter {
         if seq & 1 == 1 { return nil }
         var likes = "["
         var cuts = "["
+        var inputs = "["
         for index in 0 ..< channelCount {
             if index > 0 {
                 likes += ","
                 cuts += ","
+                inputs += ","
             }
             likes += format(likelihood[index])
             cuts += format(cutDb[index])
+            inputs += format(inputDb[index])
         }
         likes += "]"
         cuts += "]"
-        return "{\"seq\":\(published),\"channels\":\(channelCount),\"delay\":\(delay),\"mode\":\"\(mode.rawValue)\",\"likelihood\":\(likes),\"cutDb\":\(cuts),\"missed\":\(missed),\"overrun\":\(overrun),\"pressure\":\"\(pressure)\",\"thermal\":\"\(thermal)\"}"
+        inputs += "]"
+        return "{\"seq\":\(published),\"channels\":\(channelCount),\"delay\":\(delay),\"mode\":\"\(mode.rawValue)\",\"likelihood\":\(likes),\"cutDb\":\(cuts),\"inputDb\":\(inputs),\"missed\":\(missed),\"overrun\":\(overrun),\"pressure\":\"\(pressure)\",\"thermal\":\"\(thermal)\"}"
     }
 
     public var containsSamples: Bool { false }
