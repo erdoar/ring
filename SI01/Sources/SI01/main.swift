@@ -37,7 +37,7 @@ enum SI01Main {
             app.stop()
             return
         }
-        fputs("Ring 0.6.3 runs on macOS. --check exercises the session. --self-test runs the kernel.\n", stderr)
+        fputs("Ring 0.6.4 runs on macOS. --check exercises the session. --self-test runs the kernel.\n", stderr)
         #if os(macOS)
         try InsertLaunch.run()
         #endif

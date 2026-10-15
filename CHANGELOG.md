@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.4 — 2026-10-15 — deployment
+
+The package now requires macOS 13, so the accent color and the system fonts compile.
+
 ## 0.6.3 — 2026-10-15 — build
 
 `pow` and `log10` are imported, so the trim and the input meter compile.
