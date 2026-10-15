@@ -15,7 +15,7 @@
 ### Verification
 
 - `cd SI01 && swift test -c release` — 9 tests pass on Linux / Swift 6.2.1 and on macOS 15 (Apple Silicon) / Swift 6.2.4.
-- `scripts/bundle-macos.sh` builds and ad-hoc signs `SI-01.app` on macOS.
+- `scripts/bundle-macos.sh` builds and ad-hoc signs `build/Ring <version>/Ring <version>.app` on macOS.
 - This does not verify Core Audio routing at runtime, the macOS UI, Apple Silicon callback deadlines, or real-room feedback performance. See the audit for blockers.
 
 ## 0.5.2 — 2026-10-15
