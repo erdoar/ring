@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.1 — 2026-10-15 — howl notch
+
+The 0.6.0 bench showed SI-01 cutting a 2.5 kHz howl by 3.7 dB and missing a howl on a sung harmonic. A 6 dB/s rise never reaches the old 1.3× test inside the tenth-second memory, and any voice likelihood cancelled the notch.
+
+### Changed
+
+- A partial is a howl when its frequency stays put and its level is still rising, measured in dB/s on both the whole memory and the recent quarter. A finished note fade does not qualify, because its recent slope is flat.
+- Once that rise is seen, the notch stays while the frequency stays put, including after the howl stops growing. It releases if the partial wanders.
+- The notch target is 0.05 rather than 0.2. Voice likelihood no longer vetoes a stationary rising partial, so a howl on a harmonic of a moving note can be cut. A partial whose frequency is moving is not cut.
+- Not re-measured. `ring-bench render si01` then `analyse` is the check. The numbers in `bench/RESULTS.md` are still the 0.6.0 run.
+
+
 ## 0.6.0 — 2026-10-15 — benchmark
 
 ### Added
