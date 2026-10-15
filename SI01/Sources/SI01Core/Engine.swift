@@ -57,12 +57,34 @@ private struct Ring {
     var newest: Double { at(count - 1) }
 }
 
+/// dB per second from the older half of a magnitude ring to the newer half.
+private func magSlope(_ ring: Ring, sr: Double, recent: Bool) -> Double {
+    let n = ring.count
+    let span = recent ? max(4, n / 4) : n / 2
+    let need = recent ? span * 2 : span * 2
+    guard n >= need, span >= 4 else { return 0 }
+    let end = n
+    let mid = end - span
+    let start = recent ? mid - span : 0
+    var older = 0.0
+    var newer = 0.0
+    for i in start ..< mid { older += ring.at(i) }
+    for i in mid ..< end { newer += ring.at(i) }
+    let denom = Double(mid - start)
+    older /= denom
+    newer /= Double(end - mid)
+    let dt = Double(end - start) * Double(PART) / sr / 2
+    if older <= 1e-18 || newer <= 1e-18 || dt <= 0 { return 0 }
+    return 20 * log10(newer / older) / dt
+}
+
 private struct Track {
     var hz: Double = 0
     var gain: Double = 1
     var mags = Ring()
     var freqs = Ring()
     var age = 0
+    var pinned = false
     var coeff = Coeff()
     var x1 = 0.0
     var x2 = 0.0
@@ -378,6 +400,7 @@ public final class Engine {
                 if tracks[index].age > 4 {
                     tracks[index].hz = 0
                     tracks[index].gain = 1
+                    tracks[index].pinned = false
                     tracks[index].mags.removeAll()
                     tracks[index].freqs.removeAll()
                 }
@@ -390,8 +413,8 @@ public final class Engine {
             tracks[index].age = 0
             tracks[index].mags.push(peak.mag)
             tracks[index].freqs.push(tracks[index].hz)
-            let rising = tracks[index].mags.count >= trackMem
-                && tracks[index].mags.newest > tracks[index].mags.oldest * 1.3
+            let slope = magSlope(tracks[index].mags, sr: sr, recent: false)
+            let recent = magSlope(tracks[index].mags, sr: sr, recent: true)
             var mean = 0.0
             for i in 0 ..< tracks[index].freqs.count { mean += tracks[index].freqs.at(i) }
             mean /= Double(max(1, tracks[index].freqs.count))
@@ -401,12 +424,15 @@ public final class Engine {
                 varSum += d * d
             }
             let stdev = sqrt(varSum / Double(max(1, tracks[index].freqs.count)))
-            let steady = tracks[index].freqs.count >= trackMem && stdev < 6
-            let voiced = peak.harmonic >= 0.2 || likelihood >= FREEZE_LINE
-            let held = tracks[index].gain < 0.5 && steady && !voiced
-            let cut = ((rising && steady) || held) && !voiced
-            let target = cut ? 0.2 : 1.0
-            tracks[index].gain += (target - tracks[index].gain) * 0.35
+            let enough = tracks[index].freqs.count >= trackMem
+            let steady = enough && stdev < 6
+            let rising = enough && slope >= 3 && recent >= 2
+            if rising && steady { tracks[index].pinned = true }
+            if stdev > 10 { tracks[index].pinned = false }
+            let cut = tracks[index].pinned && stdev < 8
+            let target = cut ? 0.05 : 1.0
+            let follow = target < tracks[index].gain ? 0.7 : 0.2
+            tracks[index].gain += (target - tracks[index].gain) * follow
             if cut && tracks[index].gain < 0.85 { confirmed += 1 }
             tracks[index].coeff = bandpass(hz: tracks[index].hz, sr: sr)
         }
@@ -417,6 +443,7 @@ public final class Engine {
                 guard let slot = tracks.firstIndex(where: { $0.hz == 0 }) else { break }
                 tracks[slot].hz = analyzer.peaks[i].hz
                 tracks[slot].gain = 1
+                tracks[slot].pinned = false
                 tracks[slot].mags.removeAll()
                 tracks[slot].freqs.removeAll()
                 tracks[slot].mags.push(analyzer.peaks[i].mag)
@@ -460,6 +487,7 @@ public final class Engine {
         for i in 0 ..< HOWLS {
             tracks[i].hz = 0
             tracks[i].gain = 1
+            tracks[i].pinned = false
             tracks[i].mags.removeAll()
             tracks[i].freqs.removeAll()
             tracks[i].age = 0
