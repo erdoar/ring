@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ring — vocal isolation for the console insert</title>
+<meta name="description" content="Ring is a causal, real-time vocal isolator and feedback detector for a digital-console insert, for macOS on Apple Silicon.">
+<style>
+:root{--bg:#f7f6f3;--fg:#17171a;--muted:#5d5d66;--line:#dddbd5;--accent:#c2410c;--card:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#111113;--fg:#ececef;--muted:#9a9aa3;--line:#2a2a2f;--accent:#fb923c;--card:#18181b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.6 -apple-system,BlinkMacSystemFont,"Inter","Segoe UI",sans-serif}
+main{max-width:860px;margin:0 auto;padding:0 20px}
+header{padding:72px 0 48px;border-bottom:1px solid var(--line)}
+.ring{width:56px;height:56px;border:6px solid var(--accent);border-radius:50%;margin-bottom:28px}
+h1{font-size:clamp(36px,7vw,60px);line-height:1.05;margin:0 0 16px;letter-spacing:-.02em}
+.lede{font-size:20px;color:var(--muted);max-width:620px;margin:0 0 32px}
+.btn{display:inline-block;background:var(--accent);color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;margin-right:12px}
+.ghost{background:transparent;color:var(--fg);border:1px solid var(--line)}
+.small{font-size:14px;color:var(--muted);margin-top:14px}
+section{padding:48px 0;border-bottom:1px solid var(--line)}
+h2{font-size:24px;margin:0 0 20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px}
+.card h3{margin:0 0 6px;font-size:17px}
+.card p{margin:0;color:var(--muted);font-size:15px}
+.stat{font-size:32px;font-weight:700;color:var(--accent)}
+ol{padding-left:20px}li{margin-bottom:8px}
+.note{background:var(--card);border-left:4px solid var(--accent);padding:16px 20px;border-radius:6px;color:var(--muted)}
+footer{padding:32px 0 60px;font-size:14px;color:var(--muted)}
+a{color:var(--accent)}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div class="ring" aria-hidden="true"></div>
+  <h1>Ring</h1>
+  <p class="lede">Real-time vocal isolation and feedback detection for a digital-console insert. A macOS app for Apple Silicon that takes up to eight channels from your console's USB interface.</p>
+  <a class="btn" href="https://github.com/erdoar/ring/releases/latest">Download for macOS</a>
+  <a class="btn ghost" href="https://github.com/erdoar/ring">Source on GitHub</a>
+  <p class="small">Prototype. Free and open source. Apple Silicon Mac required.</p>
+</header>
+
+<section>
+  <h2>What it does</h2>
+  <div class="grid">
+    <div class="card"><h3>Room tail removal</h3><p>Learns the room's reverb from the mic and subtracts it, capped so the output never drops more than a set amount below the dry signal.</p></div>
+    <div class="card"><h3>Howl detection</h3><p>Tracks up to eight rising, steady tones and notches them. Sung notes and vibrato stay at unity.</p></div>
+    <div class="card"><h3>Voice-aware</h3><p>Freezes learning while someone is singing or speaking, so the voice itself is never learned as room.</p></div>
+    <div class="card"><h3>Zero or low latency</h3><p>ZERO mode adds no delay. LOW mode reports 127 samples and uses them as lookahead.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>Built for the callback deadline</h2>
+  <div class="grid">
+    <div class="card"><div class="stat">8</div><p>channels per Mac at 48 kHz</p></div>
+    <div class="card"><div class="stat">52 µs</div><p>worst-case processing for all eight channels in a 32-sample block, against a 667 µs deadline (Apple Silicon test build)</p></div>
+    <div class="card"><div class="stat">Off-thread</div><p>Spectral analysis runs on a worker. The audio callback only filters and subtracts.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>Install</h2>
+  <ol>
+    <li>Download the latest <code>.dmg</code> from the releases page.</li>
+    <li>Drag Ring into Applications and open it.</li>
+    <li>The first time, open System Settings › Privacy &amp; Security and click <em>Open Anyway</em>.</li>
+  </ol>
+  <p class="note">Ring is a prototype, not yet a validated live insert. Device routing and real-room feedback performance are still being tested. See the <a href="https://github.com/erdoar/ring/blob/main/docs/REFACTOR_AUDIT.md">audit</a> for open issues.</p>
+</section>
+
+<footer>
+  <a href="https://nulytica.com">nulytica.com</a> · <a href="https://github.com/erdoar/ring/blob/main/CHANGELOG.md">Changelog</a> · <a href="https://github.com/erdoar/ring/issues">Report an issue</a>
+</footer>
+</main>
+</body>
+</html>
